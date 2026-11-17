@@ -792,10 +792,13 @@ void CMainWindow::OnAbout( wxCommandEvent& event )
 
 	//No tab support in message boxes, so manually align it
 	wxMessageBox( wxString::Format( 
-					"Half-Life Model Viewer 2.10\n"
-					"2021 Sam \"Solokiller\" Vanheer\n\n"
-					"Email:    sam.vanheer@outlook.com\n\n"
-					"Based on Jed's Half-Life Model Viewer v1.3 © 2004 Neil \'Jed\' Jedrzejewski\n"
+					"CSO Model Viewer 1.00\n"
+					"2026 AnggaraNothing, Smilex_Gamer\n"
+					"Web:      https://github.com/LieutenantEva/cso-cpp-hlmv2\n\n"
+					"Based on Half-Life Model Viewer 2.10 @ 2021 Sam \"Solokiller\" Vanheer\n"
+					"Email:    sam.vanheer@outlook.com\n"
+					"Web:      https://github.com/SamVanheer/HalfLifeModelViewer2\n\n"
+					"Also based on Jed's Half-Life Model Viewer v1.3 © 2004 Neil \'Jed\' Jedrzejewski\n"
 					"Email:    jed@wunderboy.org\n"
 					"Web:      http://www.wunderboy.org/\n\n"
 					"Also based on Half-Life Model Viewer v1.25 © 2002 Mete Ciragan\n"
@@ -804,7 +807,7 @@ void CMainWindow::OnAbout( wxCommandEvent& event )
 					"%s", 
 					tools::GetSharedCredits()
 					),
-					"About Half-Life Model Viewer", wxOK | wxICON_INFORMATION );
+					"About CSO Model Viewer", wxOK | wxICON_INFORMATION );
 }
 
 void CMainWindow::OnMessagesWindowClosed( wxCloseEvent& event )

@@ -1,4 +1,4 @@
-set(TARGET_NAME HLMV)
+set(TARGET_NAME CSOMV)
 
 find_package(OpenGL REQUIRED)
 

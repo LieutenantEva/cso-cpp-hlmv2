@@ -126,8 +126,8 @@ enum wxIdentifier
 	wxID_CUSTOM_HIGHEST
 };
 
-#define HLMV_TITLE "Half-Life Model Viewer"
-#define HLMV_SETTINGS_FILE "HLMVSettings.txt"
+#define HLMV_TITLE "CSO Model Viewer"
+#define HLMV_SETTINGS_FILE "CSOMVSettings.txt"
 #define HLMV_DUMP_MODEL_INFO_FILE "midump.txt"
 
 #endif //HLMV_UI_WXHLMV_H
