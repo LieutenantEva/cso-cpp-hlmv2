@@ -1,5 +1,9 @@
 # Changelog
 
+### V1.01
+
+* Fix crashes due to smaller studiomodel limits.
+
 ### V1.00
 
 * Based on Half-Life Model Viewer 2.10

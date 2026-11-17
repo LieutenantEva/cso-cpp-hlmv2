@@ -792,7 +792,7 @@ void CMainWindow::OnAbout( wxCommandEvent& event )
 
 	//No tab support in message boxes, so manually align it
 	wxMessageBox( wxString::Format( 
-					"CSO Model Viewer 1.00\n"
+					"CSO Model Viewer 1.01\n"
 					"2026 AnggaraNothing, Smilex_Gamer\n"
 					"Web:      https://github.com/LieutenantEva/cso-cpp-hlmv2\n\n"
 					"Based on Half-Life Model Viewer 2.10 @ 2021 Sam \"Solokiller\" Vanheer\n"
