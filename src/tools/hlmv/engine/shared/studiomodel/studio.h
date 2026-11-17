@@ -30,9 +30,9 @@ Studio models are position independent, so the cache manager can move them.
 enum
 {
 	MAXSTUDIOTRIANGLES				= 20000,	// TODO: tune this
-	MAXSTUDIOVERTS					= 2048,	// TODO: tune this
+	MAXSTUDIOVERTS					= 16384,	// TODO: tune this
 	MAXSTUDIOSEQUENCES				= 2048,	// total animation sequences -- KSH incremented
-	MAXSTUDIOSKINS					= 100,		// total textures
+	MAXSTUDIOSKINS					= 256,		// total textures
 	MAXSTUDIOSRCBONES				= 512,		// bones allowed at source movement
 	MAXSTUDIOBONES					= 128,		// total bones actually used
 	MAXSTUDIOMODELS					= 32,		// sub-models per model
@@ -42,7 +42,7 @@ enum
 	MAXSTUDIOMESHES					= 256,
 	MAXSTUDIOEVENTS					= 1024,
 	MAXSTUDIOPIVOTS					= 256,
-	MAXSTUDIOCONTROLLERS			= 8,
+	MAXSTUDIOCONTROLLERS			= 32,
 	STUDIO_VERSION					= 10,
 	STUDIO_VERSION_V2026			= 2026,	// Counter-Strike Online format, see StudioV2026.h
 
