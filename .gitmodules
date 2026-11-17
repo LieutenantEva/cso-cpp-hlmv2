@@ -1,0 +1,6 @@
+[submodule "external/OpenAL"]
+	path = external/OpenAL
+	url = https://github.com/kcat/openal-soft.git
+[submodule "external/wxWidgets"]
+	path = external/wxWidgets
+	url = https://github.com/wxWidgets/wxWidgets.git

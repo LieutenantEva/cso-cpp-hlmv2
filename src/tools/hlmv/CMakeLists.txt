@@ -3,7 +3,7 @@ set(TARGET_NAME HLMV)
 find_package(OpenGL REQUIRED)
 
 # Disable module based lookup (OpenAL Soft uses CONFIG mode and MODULE mode only works with the Creative Labs version)
-find_package(OpenAL REQUIRED NO_MODULE)
+#find_package(OpenAL REQUIRED NO_MODULE)
 
 if(WIN32)
 	find_library(GLEW glew32 PATHS ${EXTERNAL_DIR}/GLEW/lib)
@@ -11,8 +11,8 @@ else()
 	find_library(GLEW libGLEW.so.2.0.0 PATHS ${EXTERNAL_DIR}/GLEW/lib)
 endif()
 
-find_package(wxWidgets REQUIRED COMPONENTS gl adv propgrid core base)
-include(${wxWidgets_USE_FILE})
+#find_package(wxWidgets REQUIRED COMPONENTS gl adv propgrid core base)
+#include(${wxWidgets_USE_FILE})
 
 add_library(Ogg STATIC IMPORTED)
 
@@ -60,7 +60,11 @@ target_compile_definitions(${TARGET_NAME}
 
 target_link_libraries(${TARGET_NAME}
 	PRIVATE
-		${wxWidgets_LIBRARIES}
+        wx::core
+        wx::base
+        wx::adv
+        wx::propgrid
+        wx::gl
 		${GLEW}
 		OpenGL::GL
 		OpenAL::OpenAL
