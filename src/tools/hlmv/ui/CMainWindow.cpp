@@ -456,7 +456,7 @@ void CMainWindow::LoadModelRelativeToCurrent(bool next)
 					{
 						if (!strncmp(reinterpret_cast<const char*>(&header.id), STUDIOMDL_HDR_ID, 4))
 						{
-							if (header.version == STUDIO_VERSION)
+							if (header.version == STUDIO_VERSION || header.version == STUDIO_VERSION_V2026)
 							{
 								if (header.name[0] != '\0')
 								{

@@ -2,6 +2,8 @@
 #define GRAPHICS_BMPFILE_H
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace graphics
 {
@@ -65,6 +67,29 @@ enum Compression
 *	@return true on success, false otherwise.
 */
 bool SaveBMPFile( const char* const pszFilename, const int iWidth, const int iHeight, const uint8_t* pPixels, const uint8_t* pPalette );
+
+/**
+*	Saves a 24 bit true color BMP file from RGBA pixels. The alpha channel is not saved.
+*	Used for textures that have no 8 bit palette, like the BC7 textures of version 2026 models.
+*	@param pszFilename Filename to save to.
+*	@param iWidth Width of the image.
+*	@param iHeight Height of the image.
+*	@param pRGBA Array of pixels, top row first. Must be iWidth * iHeight * 4 bytes in size.
+*	@return true on success, false otherwise.
+*/
+bool SaveBMPFileRGBA( const char* const pszFilename, const int iWidth, const int iHeight, const uint8_t* pRGBA );
+
+/**
+*	Loads an uncompressed BMP file (1, 4, 8, 24 or 32 bits per pixel, bottom up or top down) and converts it to RGBA.
+*	32 bit files only provide alpha if they have an alpha mask (version 4 or 5 headers), otherwise the image is opaque.
+*	@param pszFilename Filename to load.
+*	@param[out] iWidth Width of the image.
+*	@param[out] iHeight Height of the image.
+*	@param[out] rgba Receives iWidth * iHeight * 4 bytes, top row first.
+*	@param[out] pError If not null, receives a description of why the file could not be loaded.
+*	@return true on success, false otherwise.
+*/
+bool LoadBMPFileRGBA( const char* const pszFilename, int& iWidth, int& iHeight, std::vector<uint8_t>& rgba, std::string* pError = nullptr );
 }
 }
 

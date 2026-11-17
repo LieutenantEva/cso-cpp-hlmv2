@@ -611,6 +611,26 @@ void C3DView::DrawTexture( const int iXOffset, const int iYOffset, const int iWi
 
 			for( size_t uiIndex = 0; uiIndex < meshes.size(); ++uiIndex, ++ppMeshes )
 			{
+				if( pModel->IsV2026() )
+				{
+					//Version 2026 meshes are indexed triangles with normalized float texture coordinates
+					std::vector<glm::vec2> uvs;
+
+					if( pModel->GetV2026SubMeshUVs( *ppMeshes, uvs ) )
+					{
+						glBegin( GL_TRIANGLES );
+
+						for( const auto& uv : uvs )
+						{
+							glVertex2f( x + uv.x * texture.width * flTextureScale, y + uv.y * texture.height * flTextureScale );
+						}
+
+						glEnd();
+					}
+
+					continue;
+				}
+
 				const short* ptricmds = ( short* ) ( ( byte* ) pModel->GetStudioHeader() + ( *ppMeshes )->triindex );
 
 				while( i = *( ptricmds++ ) )

@@ -483,6 +483,24 @@ void CTexturesPanel::MeshChanged( wxCommandEvent& event )
 
 void CTexturesPanel::ImportTextureFrom(const wxString& fileName, studiomdl::CStudioModel* pStudioModel, studiohdr_t* pHdr, int textureIndex)
 {
+	if (pStudioModel->IsV2026())
+	{
+		//.dds (BC7, the native format) and .bmp files. The model reads the file, this only reports the result.
+		const std::string error = pStudioModel->ImportV2026Texture(textureIndex, fileName.c_str());
+
+		if (!error.empty())
+		{
+			wxMessageBox(wxString::Format("Failed to import image \"%s\": %s", fileName.c_str(), wxString(error).c_str()));
+			return;
+		}
+
+		m_pHLMV->GetState()->modelChanged = true;
+
+		//The size may have changed
+		SetTexture(textureIndex);
+		return;
+	}
+
 	//Must be BMP
 	wxImage image(fileName, wxBITMAP_TYPE_BMP);
 
@@ -568,7 +586,8 @@ void CTexturesPanel::ImportTexture( wxCommandEvent& event )
 		return;
 	}
 
-	wxFileDialog dlg( this, wxFileSelectorPromptStr, wxEmptyString, wxEmptyString, "Windows Bitmap (*.bmp)|*.bmp" );
+	wxFileDialog dlg( this, wxFileSelectorPromptStr, wxEmptyString, wxEmptyString,
+		pStudioModel->IsV2026() ? "Texture images (*.dds;*.bmp)|*.dds;*.bmp|DirectDraw Surface (*.dds)|*.dds|Windows Bitmap (*.bmp)|*.bmp" : "Windows Bitmap (*.bmp)|*.bmp" );
 
 	if( dlg.ShowModal() == wxID_CANCEL )
 		return;
@@ -610,6 +629,19 @@ void CTexturesPanel::ImportAllTextures(wxCommandEvent& event)
 
 		fileName.SetName(texture.name);
 
+		if (pStudioModel->IsV2026())
+		{
+			//Version 2026 textures are exported as .dds files (see ExportAllTextures). Look for that first, then for a bitmap.
+			const wxString stem = wxFileName(texture.name).GetName();
+
+			fileName.SetFullName(stem + ".dds");
+
+			if (!fileName.FileExists())
+			{
+				fileName.SetFullName(stem + ".bmp");
+			}
+		}
+
 		if (fileName.FileExists())
 		{
 			ImportTextureFrom(fileName.GetFullPath(), pStudioModel, pHdr, i);
@@ -643,12 +675,35 @@ void CTexturesPanel::ExportTexture( wxCommandEvent& event )
 
 	mstudiotexture_t& texture = ((mstudiotexture_t*) ((byte*) pHdr + pHdr->textureindex))[iTextureIndex];
 
-	wxFileDialog dlg( this, wxFileSelectorPromptStr, wxEmptyString, texture.name, "Windows Bitmap (*.bmp)|*.bmp", wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
+	//Version 2026 textures are BC7 compressed. The DDS file is the native format, it has exactly what is stored in the model.
+	const bool bV2026 = pStudioModel->IsV2026();
+
+	wxFileDialog dlg( this, wxFileSelectorPromptStr, wxEmptyString,
+		bV2026 ? ( wxFileName( texture.name ).GetName() + ".dds" ) : wxString( texture.name ),
+		bV2026 ? "DirectDraw Surface (*.dds)|*.dds|Windows Bitmap (*.bmp)|*.bmp" : "Windows Bitmap (*.bmp)|*.bmp", wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
 	if( dlg.ShowModal() == wxID_CANCEL )
 		return;
 
 	const wxString szFilename = dlg.GetPath();
+
+	if( bV2026 )
+	{
+		wxString path = szFilename;
+
+		//The extension picks the format. Use the one of the selected file type if none was entered.
+		if( wxFileName( path ).GetExt().empty() )
+		{
+			path += ( dlg.GetFilterIndex() == 1 ) ? ".bmp" : ".dds";
+		}
+
+		if( !pStudioModel->ExportV2026Texture( iTextureIndex, path.c_str() ) )
+		{
+			wxMessageBox( wxString::Format( "Failed to save image \"%s\"!", path.c_str() ) );
+		}
+
+		return;
+	}
 
 	if( !graphics::bmpfile::SaveBMPFile( szFilename.c_str(), texture.width, texture.height,
 		( uint8_t* ) pHdr + texture.index, ( uint8_t* ) pHdr + texture.index + texture.width * texture.height ) )
@@ -689,6 +744,21 @@ void CTexturesPanel::ExportAllTextures(wxCommandEvent& event)
 		fileName.SetName(texture.name);
 
 		auto fullPath = fileName.GetFullPath();
+
+		if (pStudioModel->IsV2026())
+		{
+			//The native format, with the stored mip levels. Names that say .bmp don't change what the data is.
+			fileName.SetFullName(wxFileName(texture.name).GetName() + ".dds");
+
+			fullPath = fileName.GetFullPath();
+
+			if (!pStudioModel->ExportV2026Texture(i, fullPath.c_str()))
+			{
+				errors += wxString::Format("\"%s\"\n", fullPath.c_str());
+			}
+
+			continue;
+		}
 
 		if (!graphics::bmpfile::SaveBMPFile(fullPath.c_str(), texture.width, texture.height,
 			(uint8_t*) pHdr + texture.index, (uint8_t*) pHdr + texture.index + texture.width * texture.height))
@@ -787,6 +857,12 @@ void CTexturesPanel::RemapTextures()
 void CTexturesPanel::RemapTexture(int index)
 {
 	auto entity = m_pHLMV->GetState()->GetEntity();
+
+	//Version 2026 textures have no palette to remap
+	if (entity->GetModel()->IsV2026())
+	{
+		return;
+	}
 
 	auto textureHeader = entity->GetModel()->GetTextureHeader();
 

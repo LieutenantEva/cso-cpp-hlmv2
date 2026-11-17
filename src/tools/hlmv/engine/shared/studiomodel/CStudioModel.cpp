@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
@@ -18,6 +20,12 @@
 #include "graphics/Palette.h"
 
 #include "CStudioModel.h"
+#include "StudioV2026.h"
+
+#include "graphics/BMPFile.h"
+
+#include "BC7Encoder.h"
+#include "DDS.h"
 
 namespace studiomdl
 {
@@ -211,6 +219,83 @@ void UploadTexture(const mstudiotexture_t* ptexture, const byte* data, byte* pal
 	UploadRGBATexture(outwidth, outheight, tex.get(), name, bFilterTextures);
 }
 
+//Bilinear resize, only used to make non power of 2 version 2026 textures power of 2 when r_powerof2textures is set.
+std::vector<byte> ResampleRGBA(const std::vector<byte>& in, const int inWidth, const int inHeight, const int outWidth, const int outHeight)
+{
+	std::vector<byte> out(static_cast<size_t>(outWidth) * outHeight * 4);
+
+	for (int y = 0; y < outHeight; ++y)
+	{
+		const float fy = (y + 0.5f) * inHeight / outHeight - 0.5f;
+		const int y0 = std::max(0, static_cast<int>(std::floor(fy)));
+		const int y1 = std::min(inHeight - 1, y0 + 1);
+		const float ty = std::max(0.f, fy - y0);
+
+		for (int x = 0; x < outWidth; ++x)
+		{
+			const float fx = (x + 0.5f) * inWidth / outWidth - 0.5f;
+			const int x0 = std::max(0, static_cast<int>(std::floor(fx)));
+			const int x1 = std::min(inWidth - 1, x0 + 1);
+			const float tx = std::max(0.f, fx - x0);
+
+			for (int c = 0; c < 4; ++c)
+			{
+				const float top = in[(static_cast<size_t>(y0) * inWidth + x0) * 4 + c] * (1 - tx) + in[(static_cast<size_t>(y0) * inWidth + x1) * 4 + c] * tx;
+				const float bottom = in[(static_cast<size_t>(y1) * inWidth + x0) * 4 + c] * (1 - tx) + in[(static_cast<size_t>(y1) * inWidth + x1) * 4 + c] * tx;
+
+				out[(static_cast<size_t>(y) * outWidth + x) * 4 + c] = static_cast<byte>(top * (1 - ty) + bottom * ty + 0.5f);
+			}
+		}
+	}
+
+	return out;
+}
+
+/**
+*	Uploads a version 2026 texture. The alpha channel only means something for masked textures (it is what the alpha test uses),
+*	everywhere else it is forced opaque so it can't interfere with blending.
+*/
+void UploadV2026Texture(const v2026::Texture& texture, const int flags, const GLuint name, const bool bFilterTextures, const bool bPowerOf2)
+{
+	std::vector<byte> rgba = texture.rgba;
+	int width = texture.width;
+	int height = texture.height;
+
+	if (!(flags & STUDIO_NF_MASKED))
+	{
+		for (size_t i = 3; i < rgba.size(); i += 4)
+		{
+			rgba[i] = 0xFF;
+		}
+	}
+
+	int outWidth, outHeight;
+
+	if (bPowerOf2 && graphics::CalculateImageDimensions(width, height, outWidth, outHeight) && (outWidth != width || outHeight != height))
+	{
+		rgba = ResampleRGBA(rgba, width, height, outWidth, outHeight);
+		width = outWidth;
+		height = outHeight;
+	}
+
+	UploadRGBATexture(width, height, rgba.data(), name, bFilterTextures);
+}
+
+void UploadV2026Textures(const v2026::StudioModelData& data, const studiohdr_t& hdr, std::vector<GLuint>& textures, const bool bFilterTextures, const bool bPowerOf2)
+{
+	for (size_t i = 0; i < data.textures.size(); ++i)
+	{
+		GLuint name;
+
+		glBindTexture(GL_TEXTURE_2D, 0);
+		glGenTextures(1, &name);
+
+		UploadV2026Texture(data.textures[i], hdr.GetTexture(static_cast<int>(i))->flags, name, bFilterTextures, bPowerOf2);
+
+		textures.emplace_back(name);
+	}
+}
+
 size_t UploadTextures(studiohdr_t& textureHdr, std::vector<GLuint>& textures, const bool bFilterTextures, const bool bPowerOf2, const bool bIsDol)
 {
 	size_t uiNumTextures = 0;
@@ -248,12 +333,14 @@ size_t UploadTextures(studiohdr_t& textureHdr, std::vector<GLuint>& textures, co
 }
 
 CStudioModel::CStudioModel(std::string&& fileName, studio_ptr<studiohdr_t>&& pStudioHdr, studio_ptr<studiohdr_t>&& pTextureHdr,
-	std::vector<studio_ptr<studioseqhdr_t>>&& sequenceHeaders, std::vector<GLuint>&& textures)
+	std::vector<studio_ptr<studioseqhdr_t>>&& sequenceHeaders, std::vector<GLuint>&& textures,
+	std::unique_ptr<v2026::StudioModelData>&& v2026Data)
 	: m_FileName(std::move(fileName))
 	, m_pStudioHdr(std::move(pStudioHdr))
 	, m_pTextureHdr(std::move(pTextureHdr))
 	, m_SequenceHeaders(std::move(sequenceHeaders))
 	, m_Textures(std::move(textures))
+	, m_pV2026Data(std::move(v2026Data))
 {
 	assert(m_pStudioHdr);
 }
@@ -284,6 +371,249 @@ mstudiomodel_t* CStudioModel::GetModelByBodyPart(const int iBody, const int iBod
 	index = index % pbodypart->nummodels;
 
 	return (mstudiomodel_t*) ((byte*) m_pStudioHdr.get() + pbodypart->modelindex) + index;
+}
+
+const v2026::Model* CStudioModel::GetV2026Model(const mstudiomodel_t* pModel) const
+{
+	if (!m_pV2026Data)
+	{
+		return nullptr;
+	}
+
+	return m_pV2026Data->FindModel(m_pStudioHdr->GetData(), pModel);
+}
+
+bool CStudioModel::GetV2026SubMeshUVs(const mstudiomesh_t* pMesh, std::vector<glm::vec2>& uvs) const
+{
+	uvs.clear();
+
+	if (!m_pV2026Data)
+	{
+		return false;
+	}
+
+	const auto ref = m_pV2026Data->FindSubMesh(pMesh);
+
+	if (!ref)
+	{
+		return false;
+	}
+
+	const auto& mesh = m_pV2026Data->GetMesh(*ref);
+	const auto& sub = m_pV2026Data->GetSubMesh(*ref);
+
+	uvs.reserve(sub.indexCount);
+
+	for (uint32_t i = 0; i < sub.indexCount; ++i)
+	{
+		uvs.push_back(mesh.vertices[mesh.indices[sub.firstIndex + i]].uv);
+	}
+
+	return true;
+}
+
+namespace
+{
+//Lowercase extension of a file name including the dot, or an empty string.
+std::string GetLowerExtension(const char* pszFileName)
+{
+	const std::string fileName{pszFileName ? pszFileName : ""};
+
+	const auto dot = fileName.find_last_of('.');
+	const auto separator = fileName.find_last_of("/\\");
+
+	if (dot == std::string::npos || (separator != std::string::npos && dot < separator))
+	{
+		return {};
+	}
+
+	std::string extension = fileName.substr(dot);
+
+	for (auto& c : extension)
+	{
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+
+	return extension;
+}
+}
+
+bool CStudioModel::ExportV2026Texture(const int iIndex, const char* pszFileName) const
+{
+	if (GetLowerExtension(pszFileName) == ".bmp")
+	{
+		return ExportV2026TextureBMP(iIndex, pszFileName);
+	}
+
+	return ExportV2026TextureDDS(iIndex, pszFileName);
+}
+
+std::string CStudioModel::ImportV2026Texture(const int iIndex, const char* pszFileName)
+{
+	const auto extension = GetLowerExtension(pszFileName);
+
+	if (extension == ".dds")
+	{
+		return ImportV2026TextureDDS(iIndex, pszFileName);
+	}
+
+	if (extension == ".bmp")
+	{
+		int width, height;
+		std::vector<uint8_t> rgba;
+		std::string error;
+
+		if (!graphics::bmpfile::LoadBMPFileRGBA(pszFileName, width, height, rgba, &error))
+		{
+			return error;
+		}
+
+		return ImportV2026TextureRGBA(iIndex, width, height, rgba.data());
+	}
+
+	return "Unsupported file type. Use a .dds or .bmp file";
+}
+
+bool CStudioModel::ExportV2026TextureDDS(const int iIndex, const char* pszFileName) const
+{
+	if (!m_pV2026Data || iIndex < 0 || static_cast<size_t>(iIndex) >= m_pV2026Data->textures.size() || !pszFileName)
+	{
+		return false;
+	}
+
+	const auto& texture = m_pV2026Data->textures[iIndex];
+
+	const auto file = dds::WriteBC7(texture.width, texture.height, texture.mipLevels, texture.compressed.data());
+
+	FILE* pFile = utf8_fopen(pszFileName, "wb");
+
+	if (!pFile)
+	{
+		return false;
+	}
+
+	const bool bSuccess = fwrite(file.data(), 1, file.size(), pFile) == file.size();
+
+	fclose(pFile);
+
+	return bSuccess;
+}
+
+std::string CStudioModel::ImportV2026TextureDDS(const int iIndex, const char* pszFileName)
+{
+	if (!m_pV2026Data || iIndex < 0 || static_cast<size_t>(iIndex) >= m_pV2026Data->textures.size() || !pszFileName)
+	{
+		return "Invalid texture";
+	}
+
+	FILE* pFile = utf8_fopen(pszFileName, "rb");
+
+	if (!pFile)
+	{
+		return "Could not open the file";
+	}
+
+	std::vector<byte> contents;
+
+	{
+		byte buffer[65536];
+		size_t read;
+
+		constexpr size_t MAX_FILE_SIZE = 512 * 1024 * 1024;
+
+		while ((read = fread(buffer, 1, sizeof(buffer), pFile)) > 0)
+		{
+			contents.insert(contents.end(), buffer, buffer + read);
+
+			if (contents.size() > MAX_FILE_SIZE)
+			{
+				fclose(pFile);
+				return "The file is too large";
+			}
+		}
+	}
+
+	fclose(pFile);
+
+	dds::Image image;
+	std::string error;
+
+	if (!dds::Parse(contents.data(), contents.size(), image, error))
+	{
+		return error;
+	}
+
+	if (!image.isBC7)
+	{
+		return ImportV2026TextureRGBA(iIndex, image.width, image.height, image.data.data());
+	}
+
+	try
+	{
+		m_pV2026Data->ReplaceTexture(iIndex, image.width, image.height, image.mipLevels, std::move(image.data));
+	}
+	catch (const v2026::StudioModelV2026Error& e)
+	{
+		return e.what();
+	}
+
+	OnV2026TextureReplaced(iIndex);
+
+	return {};
+}
+
+std::string CStudioModel::ImportV2026TextureRGBA(const int iIndex, const int iWidth, const int iHeight, const uint8_t* pRGBA)
+{
+	if (!m_pV2026Data || iIndex < 0 || static_cast<size_t>(iIndex) >= m_pV2026Data->textures.size() || !pRGBA)
+	{
+		return "Invalid texture";
+	}
+
+	if (iWidth <= 0 || iHeight <= 0 || iWidth > 16384 || iHeight > 16384)
+	{
+		return "Unsupported image dimensions";
+	}
+
+	//Keep the number of mip levels the model uses for this texture
+	const int levels = std::min(std::max(m_pV2026Data->textures[iIndex].mipLevels, 1), dds::FullMipCount(iWidth, iHeight));
+
+	try
+	{
+		m_pV2026Data->ReplaceTexture(iIndex, iWidth, iHeight, levels, bc7::EncodeMipChain(pRGBA, iWidth, iHeight, levels));
+	}
+	catch (const v2026::StudioModelV2026Error& e)
+	{
+		return e.what();
+	}
+
+	OnV2026TextureReplaced(iIndex);
+
+	return {};
+}
+
+void CStudioModel::OnV2026TextureReplaced(const int iIndex)
+{
+	const auto& texture = m_pV2026Data->textures[iIndex];
+
+	//The records the rest of the program sees
+	mstudiotexture_t* const pRecord = m_pStudioHdr->GetTexture(iIndex);
+
+	pRecord->width = texture.width;
+	pRecord->height = texture.height;
+
+	ReuploadTexture(pRecord);
+}
+
+bool CStudioModel::ExportV2026TextureBMP(const int iIndex, const char* pszFileName) const
+{
+	if (!m_pV2026Data || iIndex < 0 || static_cast<size_t>(iIndex) >= m_pV2026Data->textures.size())
+	{
+		return false;
+	}
+
+	const auto& texture = m_pV2026Data->textures[iIndex];
+
+	return graphics::bmpfile::SaveBMPFileRGBA(pszFileName, texture.width, texture.height, texture.rgba.data());
 }
 
 int CStudioModel::GetBodyValueForGroup(int compositeValue, int group) const
@@ -330,6 +660,13 @@ GLuint CStudioModel::GetTextureId(const int iIndex) const
 
 void CStudioModel::ReplaceTexture(mstudiotexture_t* ptexture, byte* data, byte* pal, GLuint textureId)
 {
+	if (IsV2026())
+	{
+		//Version 2026 textures are true color BC7, there is no 8 bit data to replace them with
+		Error("CStudioModel::ReplaceTexture: Cannot replace textures of version 2026 models\n");
+		return;
+	}
+
 	UploadTexture(ptexture, data, pal, textureId, r_filtertextures.GetBool(), r_powerof2textures.GetBool());
 }
 
@@ -348,6 +685,12 @@ void CStudioModel::ReuploadTexture(mstudiotexture_t* ptexture)
 	}
 
 	GLuint textureId = m_Textures[iIndex];
+
+	if (IsV2026())
+	{
+		UploadV2026Texture(m_pV2026Data->textures[iIndex], ptexture->flags, textureId, r_filtertextures.GetBool(), r_powerof2textures.GetBool());
+		return;
+	}
 
 	UploadTexture(ptexture,
 		header->GetData() + ptexture->index,
@@ -394,7 +737,7 @@ studio_ptr<T> LoadStudioHeader(const char* const pszFilename, const bool bAllowS
 		throw StudioModelInvalidFormat(std::string{"File \""} + pszFilename + "\": Expected a main studio model file, got a sequence file");
 	}
 
-	if (pStudioHdr->version != STUDIO_VERSION)
+	if (pStudioHdr->version != STUDIO_VERSION && pStudioHdr->version != STUDIO_VERSION_V2026)
 	{
 		throw StudioModelVersionDiffers(std::string{"File \""} + pszFilename + "\": version differs: expected \"" +
 			std::to_string(STUDIO_VERSION) + "\", got \"" + std::to_string(pStudioHdr->version) + "\"",
@@ -440,10 +783,37 @@ std::unique_ptr<CStudioModel> LoadStudioModel(const char* const pszFilename)
 		throw StudioModelIsNotMainHeader(message);
 	}
 
+	//Version 2026 models keep their original data. The v2026 specific parts are parsed here, and version 10 style records
+	//describing them are appended to the buffer so the rest of the program can list and count them. See StudioV2026.h.
+	std::unique_ptr<v2026::StudioModelData> v2026Data;
+
+	if (mainHeader->version == STUDIO_VERSION_V2026)
+	{
+		try
+		{
+			v2026Data = v2026::Parse(mainHeader->GetData(), mainHeader->length);
+
+			size_t shadowSize = 0;
+
+			auto shadowBuffer = v2026::BuildShadowBuffer(mainHeader->GetData(), mainHeader->length, *v2026Data, shadowSize);
+
+			mainHeader.reset(reinterpret_cast<studiohdr_t*>(shadowBuffer.release()));
+		}
+		catch (const v2026::StudioModelV2026Error& e)
+		{
+			throw StudioModelInvalidFormat(std::string{"File \""} + pszFilename + "\": " + e.what());
+		}
+
+		for (const auto& warning : v2026Data->warnings)
+		{
+			Warning("%s: %s\n", pszFilename, warning.c_str());
+		}
+	}
+
 	studio_ptr<studiohdr_t> textureHeader;
 
 	// preload textures
-	if (mainHeader->numtextures == 0)
+	if (mainHeader->numtextures == 0 && !v2026Data)
 	{
 		const auto extension = bIsDol ? "T.dol" : "T.mdl";
 
@@ -479,10 +849,17 @@ std::unique_ptr<CStudioModel> LoadStudioModel(const char* const pszFilename)
 
 	std::vector<GLuint> textures;
 
-	UploadTextures(textureHeader ? *textureHeader : *mainHeader, textures, r_filtertextures.GetBool(), r_powerof2textures.GetBool(), bIsDol);
+	if (v2026Data)
+	{
+		UploadV2026Textures(*v2026Data, *mainHeader, textures, r_filtertextures.GetBool(), r_powerof2textures.GetBool());
+	}
+	else
+	{
+		UploadTextures(textureHeader ? *textureHeader : *mainHeader, textures, r_filtertextures.GetBool(), r_powerof2textures.GetBool(), bIsDol);
+	}
 
 	return std::make_unique<CStudioModel>(pszFilename, std::move(mainHeader), std::move(textureHeader),
-		std::move(sequenceHeaders), std::move(textures));
+		std::move(sequenceHeaders), std::move(textures), std::move(v2026Data));
 }
 
 void SaveStudioModel(const char* const pszFilename, CStudioModel& model, bool correctSequenceGroupFileNames)
@@ -565,6 +942,21 @@ void SaveStudioModel(const char* const pszFilename, CStudioModel& model, bool co
 		}
 	}
 
+	//Version 2026 models are rebuilt from the original file. Do it before anything is written so a failure leaves no partial file.
+	std::vector<byte> v2026File;
+
+	if (model.IsV2026())
+	{
+		try
+		{
+			v2026File = v2026::BuildSaveBuffer(pStudioHdr->GetData(), pStudioHdr->length, *model.GetV2026Data());
+		}
+		catch (const v2026::StudioModelV2026Error& e)
+		{
+			throw StudioModelException(std::string{"Could not save version 2026 model: "} + e.what());
+		}
+	}
+
 	FILE* pFile = utf8_fopen(pszFilename, "wb");
 
 	if (!pFile)
@@ -572,7 +964,10 @@ void SaveStudioModel(const char* const pszFilename, CStudioModel& model, bool co
 		throw StudioModelException("Could not open main file for writing");
 	}
 
-	bool bSuccess = fwrite(pStudioHdr, sizeof(byte), pStudioHdr->length, pFile) == pStudioHdr->length;
+	const byte* const pMainData = model.IsV2026() ? v2026File.data() : reinterpret_cast<const byte*>(pStudioHdr);
+	const size_t mainSize = model.IsV2026() ? v2026File.size() : static_cast<size_t>(pStudioHdr->length);
+
+	bool bSuccess = fwrite(pMainData, sizeof(byte), mainSize, pFile) == mainSize;
 
 	fclose(pFile);
 
@@ -654,6 +1049,12 @@ void ScaleMeshes(CStudioModel* pStudioModel, const float flScale)
 	int iBodygroup = 0;
 
 	// scale verts
+	if (pStudioModel->IsV2026())
+	{
+		//The version 10 style model records don't point to vertex data. Vertices are scaled in bone space like for version 10.
+		pStudioModel->GetV2026Data()->ScaleMeshes(flScale);
+	}
+	else
 	for (int i = 0; i < pStudioHdr->numbodyparts; i++)
 	{
 		mstudiobodyparts_t* pbodypart = pStudioHdr->GetBodypart(i);

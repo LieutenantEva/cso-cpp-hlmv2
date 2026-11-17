@@ -13,6 +13,7 @@
 #include "shared/renderer/studiomodel/IStudioModelRendererListener.h"
 
 #include "CStudioModelRenderer.h"
+#include "shared/studiomodel/StudioV2026.h"
 
 //Double to float conversion
 #pragma warning( disable: 4244 )
@@ -504,6 +505,27 @@ void CStudioModelRenderer::DrawNormals()
 	{
 		SetupModel( iBodyPart );
 
+		if( m_pRenderInfo->pModel->IsV2026() )
+		{
+			if( const auto* pV2026Model = m_pRenderInfo->pModel->GetV2026Model( m_pModel ) )
+			{
+				SkinV2026Model( *pV2026Model );
+
+				for( const auto& mesh : m_V2026Meshes )
+				{
+					for( size_t i = 0; i < mesh.positions.size(); ++i )
+					{
+						const auto absoluteNormalEnd = mesh.positions[ i ] + mesh.normals[ i ];
+
+						glVertex3fv( glm::value_ptr( mesh.positions[ i ] ) );
+						glVertex3fv( glm::value_ptr( absoluteNormalEnd ) );
+					}
+				}
+			}
+
+			continue;
+		}
+
 		auto pvertbone = ( const byte* ) ( m_pStudioHdr->GetData() + m_pModel->vertinfoindex );
 		auto pnormbone = ( const byte* ) ( m_pStudioHdr->GetData() + m_pModel->norminfoindex );
 
@@ -987,6 +1009,11 @@ void CStudioModelRenderer::SetupModel( int bodypart )
 
 unsigned int CStudioModelRenderer::DrawPoints( const bool bWireframe )
 {
+	if( m_pRenderInfo->pModel->IsV2026() )
+	{
+		return DrawPointsV2026( bWireframe );
+	}
+
 	unsigned int uiDrawnPolys = 0;
 
 	auto pvertbone = ( ( byte * ) m_pStudioHdr + m_pModel->vertinfoindex );
@@ -1154,6 +1181,268 @@ unsigned int CStudioModelRenderer::DrawMeshes( const bool bWireframe, const Sort
 	return uiDrawnPolys;
 }
 
+void CStudioModelRenderer::SkinV2026Model( const v2026::Model& model )
+{
+	const auto* pData = m_pRenderInfo->pModel->GetV2026Data();
+
+	const size_t numBones = static_cast<size_t>( m_pStudioHdr->numbones );
+
+	m_V2026SkinMatrices.resize( numBones );
+
+	v2026::ComputeSkinMatrices( m_bonetransform, pData->inverseBindPose.data(), numBones, m_V2026SkinMatrices.data(), pData->meshScale );
+
+	m_V2026Meshes.resize( model.meshes.size() );
+
+	for( size_t i = 0; i < model.meshes.size(); ++i )
+	{
+		const auto& mesh = model.meshes[ i ];
+		auto& skinned = m_V2026Meshes[ i ];
+
+		skinned.positions.resize( mesh.vertices.size() );
+		skinned.normals.resize( mesh.vertices.size() );
+
+		v2026::SkinMesh( mesh, m_V2026SkinMatrices.data(), skinned.positions.data(), skinned.normals.data() );
+	}
+}
+
+unsigned int CStudioModelRenderer::DrawPointsV2026( const bool bWireframe )
+{
+	const auto* pV2026Model = m_pRenderInfo->pModel->GetV2026Model( m_pModel );
+
+	if( !pV2026Model )
+	{
+		return 0;
+	}
+
+	SkinV2026Model( *pV2026Model );
+
+	const auto ptexture = m_pTextureHdr->GetTextures();
+	auto pskinref = m_pTextureHdr->GetSkins();
+
+	if( m_pRenderInfo->iSkin != 0 && m_pRenderInfo->iSkin < m_pTextureHdr->numskinfamilies )
+		pskinref += ( m_pRenderInfo->iSkin * m_pTextureHdr->numskinref );
+
+	struct Draw
+	{
+		size_t mesh;
+		const v2026::SubMesh* pSubMesh;
+		int texture;
+		int flags;
+	};
+
+	std::vector<Draw> draws;
+
+	for( size_t i = 0; i < pV2026Model->meshes.size(); ++i )
+	{
+		for( const auto& sub : pV2026Model->meshes[ i ].subMeshes )
+		{
+			const int texture = pskinref[ sub.skinref ];
+
+			draws.push_back( { i, &sub, texture, ptexture[ texture ].flags } );
+		}
+	}
+
+	//Same ordering as for version 10 models: masked before solid before additive.
+	std::stable_sort( draws.begin(), draws.end(), []( const Draw& lhs, const Draw& rhs )
+		{
+			return CompareSortedMeshes( SortedMesh_t{ nullptr, lhs.flags }, SortedMesh_t{ nullptr, rhs.flags } );
+		} );
+
+	if( bWireframe )
+		glColor4f( r_wireframecolor_r.GetFloat() / 255.0f,
+				   r_wireframecolor_g.GetFloat() / 255.0f,
+				   r_wireframecolor_b.GetFloat() / 255.0f,
+				   m_pRenderInfo->flTransparency );
+
+	unsigned int uiDrawnPolys = 0;
+
+	//Polygons may overlap, so make sure they can blend together.
+	glDepthFunc( GL_LEQUAL );
+
+	for( const auto& draw : draws )
+	{
+		const auto& mesh = pV2026Model->meshes[ draw.mesh ];
+		auto& skinned = m_V2026Meshes[ draw.mesh ];
+		const mstudiotexture_t& texture = ptexture[ draw.texture ];
+
+		if( !bWireframe )
+		{
+			//Normals are in model space here, so the light vector doesn't need to be moved into bone space.
+			skinned.light.resize( mesh.vertices.size() );
+
+			const bool bChrome = ( draw.flags & STUDIO_NF_CHROME ) != 0;
+
+			if( bChrome )
+			{
+				skinned.chrome.resize( mesh.vertices.size() );
+			}
+
+			for( size_t i = 0; i < mesh.vertices.size(); ++i )
+			{
+				Lighting( skinned.light[ i ], m_lightvec, draw.flags, skinned.normals[ i ] );
+
+				if( bChrome )
+				{
+					ChromeV2026( skinned.chrome[ i ], mesh.vertices[ i ], skinned.normals[ i ] );
+				}
+			}
+		}
+
+		if( texture.flags & STUDIO_NF_ADDITIVE )
+			glDepthMask( GL_FALSE );
+		else
+			glDepthMask( GL_TRUE );
+
+		if( texture.flags & STUDIO_NF_ADDITIVE )
+		{
+			glEnable( GL_BLEND );
+			glBlendFunc( GL_SRC_ALPHA, GL_ONE );
+		}
+		else if( m_pRenderInfo->flTransparency < 1.0f )
+		{
+			glEnable( GL_BLEND );
+			glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+		}
+		else
+			glDisable( GL_BLEND );
+
+		if( texture.flags & STUDIO_NF_MASKED )
+		{
+			glEnable( GL_ALPHA_TEST );
+			glAlphaFunc( GL_GREATER, 0.5f );
+		}
+
+		if( !bWireframe )
+		{
+			glBindTexture( GL_TEXTURE_2D, m_pRenderInfo->pModel->GetTextureId( draw.texture ) );
+		}
+
+		glBegin( GL_TRIANGLES );
+
+		for( uint32_t i = 0; i < draw.pSubMesh->indexCount; ++i )
+		{
+			const uint32_t vertexIndex = mesh.indices[ draw.pSubMesh->firstIndex + i ];
+
+			if( !bWireframe )
+			{
+				if( draw.flags & STUDIO_NF_CHROME )
+				{
+					const auto& c = skinned.chrome[ vertexIndex ];
+
+					glTexCoord2f( c[ 0 ], c[ 1 ] );
+				}
+				else
+				{
+					//Version 2026 texture coordinates are already normalized, v = 0 is the top row (the first row uploaded)
+					glTexCoord2f( mesh.vertices[ vertexIndex ].uv.x, mesh.vertices[ vertexIndex ].uv.y );
+				}
+
+				if( draw.flags & STUDIO_NF_ADDITIVE )
+				{
+					glColor4f( 1.0f, 1.0f, 1.0f, m_pRenderInfo->flTransparency );
+				}
+				else
+				{
+					const glm::vec3& lightVec = skinned.light[ vertexIndex ];
+					glColor4f( lightVec[ 0 ], lightVec[ 1 ], lightVec[ 2 ], m_pRenderInfo->flTransparency );
+				}
+			}
+
+			glVertex3fv( glm::value_ptr( skinned.positions[ vertexIndex ] ) );
+		}
+
+		glEnd();
+
+		uiDrawnPolys += draw.pSubMesh->indexCount / 3;
+
+		if( texture.flags & STUDIO_NF_MASKED )
+			glDisable( GL_ALPHA_TEST );
+	}
+
+	glDepthMask( GL_TRUE );
+
+	return uiDrawnPolys;
+}
+
+void CStudioModelRenderer::ChromeV2026( glm::vec2& chrome, const v2026::Vertex& vertex, const glm::vec3& normal )
+{
+	//Chrome coordinates are calculated per bone, from the position of that bone. A vertex that is moved by several bones gets the
+	//weighted average of the coordinates of each of them, the same way its position is blended.
+	const unsigned total = vertex.weights[ 0 ] + vertex.weights[ 1 ] + vertex.weights[ 2 ] + vertex.weights[ 3 ];
+
+	chrome = glm::vec2( 0 );
+
+	for( int i = 0; i < 4; ++i )
+	{
+		//Same rule as for skinning: if nothing is weighted the first bone is used
+		if( !vertex.weights[ i ] && !( total == 0 && i == 0 ) )
+		{
+			continue;
+		}
+
+		const float weight = total ? static_cast<float>( vertex.weights[ i ] ) / static_cast<float>( total ) : 1.0f;
+		const int bone = vertex.bones[ i ];
+
+		glm::vec3 boneSpaceNormal;
+		VectorIRotate( normal, m_bonetransform[ bone ], boneSpaceNormal );
+
+		glm::vec2 boneChrome;
+		Chrome( boneChrome, bone, boneSpaceNormal );
+
+		chrome += weight * boneChrome;
+	}
+}
+
+unsigned int CStudioModelRenderer::InternalDrawShadowsV2026()
+{
+	const auto* pV2026Model = m_pRenderInfo->pModel->GetV2026Model( m_pModel );
+
+	if( !pV2026Model )
+	{
+		return 0;
+	}
+
+	SkinV2026Model( *pV2026Model );
+
+	unsigned int drawnPolys = 0;
+
+	//Always at the entity origin
+	const auto lightSampleHeight = m_pRenderInfo->vecOrigin.z;
+	const auto shadowHeight = lightSampleHeight + 1.0;
+
+	for( size_t i = 0; i < pV2026Model->meshes.size(); ++i )
+	{
+		const auto& mesh = pV2026Model->meshes[ i ];
+		const auto& skinned = m_V2026Meshes[ i ];
+
+		for( const auto& sub : mesh.subMeshes )
+		{
+			drawnPolys += sub.indexCount / 3;
+
+			glBegin( GL_TRIANGLES );
+
+			for( uint32_t k = 0; k < sub.indexCount; ++k )
+			{
+				const auto vertex{ skinned.positions[ mesh.indices[ sub.firstIndex + k ] ] };
+
+				const auto lightDistance = vertex.z - lightSampleHeight;
+
+				glm::vec3 point;
+
+				point.x = vertex.x - m_lightvec.x * lightDistance;
+				point.y = vertex.y - m_lightvec.y * lightDistance;
+				point.z = shadowHeight;
+
+				glVertex3fv( glm::value_ptr( point ) );
+			}
+
+			glEnd();
+		}
+	}
+
+	return drawnPolys;
+}
+
 unsigned int CStudioModelRenderer::DrawShadows(const bool fixZFighting, const bool wireframe)
 {
 	if (!(m_pStudioHdr->flags & EF_NOSHADELIGHT))
@@ -1214,6 +1503,11 @@ unsigned int CStudioModelRenderer::DrawShadows(const bool fixZFighting, const bo
 
 unsigned int CStudioModelRenderer::InternalDrawShadows()
 {
+	if( m_pRenderInfo->pModel->IsV2026() )
+	{
+		return InternalDrawShadowsV2026();
+	}
+
 	unsigned int drawnPolys = 0;
 
 	//Always at the entity origin
@@ -1263,6 +1557,11 @@ unsigned int CStudioModelRenderer::InternalDrawShadows()
 
 void CStudioModelRenderer::Lighting( glm::vec3& lv, int bone, int flags, const glm::vec3& normal )
 {
+	Lighting( lv, m_blightvec[ bone ], flags, normal );
+}
+
+void CStudioModelRenderer::Lighting( glm::vec3& lv, const glm::vec3& lightvec, int flags, const glm::vec3& normal )
+{
 	const float ambient = std::max( 0.1f, ( float ) m_ambientlight / 255.0f ); // to avoid divison by zero
 	const float shade = m_shadelight / 255.0f;
 	glm::vec3 illum{ ambient };
@@ -1278,7 +1577,7 @@ void CStudioModelRenderer::Lighting( glm::vec3& lv, int bone, int flags, const g
 	}
 	else
 	{
-		auto lightcos = glm::dot( normal, m_blightvec[ bone ] ); // -1 colinear, 1 opposite
+		auto lightcos = glm::dot( normal, lightvec ); // -1 colinear, 1 opposite
 
 		if( lightcos > 1.0f ) lightcos = 1;
 

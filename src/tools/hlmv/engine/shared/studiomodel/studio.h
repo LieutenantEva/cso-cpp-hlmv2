@@ -44,6 +44,7 @@ enum
 	MAXSTUDIOPIVOTS					= 256,
 	MAXSTUDIOCONTROLLERS			= 8,
 	STUDIO_VERSION					= 10,
+	STUDIO_VERSION_V2026			= 2026,	// Counter-Strike Online format, see StudioV2026.h
 
 	/**
 	*	Maximum length for the event options string.

@@ -1,5 +1,13 @@
 target_sources(${TARGET_NAME}
 	PRIVATE
+		BC7.cpp
+		BC7.h
+		BC7Encoder.cpp
+		BC7Encoder.h
 		CStudioModel.cpp
 		CStudioModel.h
-		studio.h)
+		DDS.cpp
+		DDS.h
+		studio.h
+		StudioV2026.cpp
+		StudioV2026.h)

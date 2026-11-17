@@ -1,6 +1,8 @@
 #ifndef GAME_STUDIOMODEL_CSTUDIOMODELRENDERER_H
 #define GAME_STUDIOMODEL_CSTUDIOMODELRENDERER_H
 
+#include <vector>
+
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -18,6 +20,12 @@
 namespace studiomdl
 {
 class CStudioModel;
+
+namespace v2026
+{
+struct Model;
+struct Vertex;
+}
 
 class CStudioModelRenderer final : public studiomdl::IStudioModelRenderer
 {
@@ -114,7 +122,37 @@ private:
 
 	unsigned int InternalDrawShadows();
 
+	//Version 2026 models. Vertices carry up to 4 bone weights and are in model space, so they are skinned into these buffers
+	//instead of using the fixed size arrays used for version 10 models.
+	struct V2026SkinnedMesh
+	{
+		std::vector<glm::vec3> positions;
+		std::vector<glm::vec3> normals;
+		std::vector<glm::vec3> light;
+		std::vector<glm::vec2> chrome;
+	};
+
+	/**
+	*	@brief Skins all meshes of the model into m_V2026Meshes using the current bone transforms.
+	*/
+	void SkinV2026Model( const v2026::Model& model );
+
+	unsigned int DrawPointsV2026( const bool bWireframe );
+
+	/**
+	*\brief Chrome texture coordinates for a vertex that can be moved by several bones.
+	*\param normal Normal in model space.
+	*/
+	void ChromeV2026( glm::vec2& chrome, const v2026::Vertex& vertex, const glm::vec3& normal );
+
+	unsigned int InternalDrawShadowsV2026();
+
 	void Lighting( glm::vec3& lv, int bone, int flags, const glm::vec3& normal );
+
+	/**
+	*	@param lightvec Light vector in the same space as the normal.
+	*/
+	void Lighting( glm::vec3& lv, const glm::vec3& lightvec, int flags, const glm::vec3& normal );
 	void Chrome( glm::vec2& chrome, int bone, const glm::vec3& normal );
 
 private:
@@ -137,6 +175,9 @@ private:
 	*/
 	unsigned int m_uiDrawnPolygonsCount = 0;
 
+	std::vector<glm::mat3x4> m_V2026SkinMatrices;
+	std::vector<V2026SkinnedMesh> m_V2026Meshes;
+
 	glm::vec3		m_xformverts[ MAXSTUDIOVERTS ];		// transformed vertices
 	glm::vec3		m_xformnorms[MAXSTUDIOVERTS];
 	glm::vec3		m_lightvalues[ MAXSTUDIOVERTS ];	// light surface normals
@@ -155,7 +196,7 @@ private:
 	glm::vec3		m_blightvec[ MAXSTUDIOBONES ];		// light vectors in bone reference frames
 
 	glm::vec2		m_chrome[ MAXSTUDIOVERTS ];			// texture coords for surface normals
-	unsigned int	m_chromeage[ MAXSTUDIOBONES ];		// last time chrome vectors were updated
+	unsigned int	m_chromeage[ MAXSTUDIOBONES ] = {};		// last time chrome vectors were updated. Must start at 0: an arbitrary value that happens to match the draw counter skips the update
 	glm::vec3		m_chromeup[ MAXSTUDIOBONES ];		// chrome vector "up" in bone reference frames
 	glm::vec3		m_chromeright[ MAXSTUDIOBONES ];	// chrome vector "right" in bone reference frames
 

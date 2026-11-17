@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include "shared/Const.h"
@@ -19,6 +20,12 @@
 
 namespace studiomdl
 {
+namespace v2026
+{
+class StudioModelData;
+struct Model;
+}
+
 /**
 *	@brief Base class for all studio model exceptions
 */
@@ -130,7 +137,8 @@ public:
 
 public:
 	CStudioModel(std::string&& fileName, studio_ptr<studiohdr_t>&& pStudioHdr, studio_ptr<studiohdr_t>&& pTextureHdr,
-		std::vector<studio_ptr<studioseqhdr_t>>&& sequenceHeaders, std::vector<GLuint>&& textures);
+		std::vector<studio_ptr<studioseqhdr_t>>&& sequenceHeaders, std::vector<GLuint>&& textures,
+		std::unique_ptr<v2026::StudioModelData>&& v2026Data = nullptr);
 	~CStudioModel();
 
 	const std::string& GetFileName() const { return m_FileName; }
@@ -159,6 +167,63 @@ public:
 	mstudioanim_t*	GetAnim( mstudioseqdesc_t* pseqdesc ) const;
 
 	mstudiomodel_t* GetModelByBodyPart( const int iBody, const int iBodyPart ) const;
+
+	/**
+	*	@brief Whether this is a version 2026 model. Its models, meshes and textures are described to the rest of the program by
+	*		version 10 style records, but the actual data is in GetV2026Data(). See StudioV2026.h.
+	*/
+	bool IsV2026() const { return m_pV2026Data != nullptr; }
+
+	v2026::StudioModelData* GetV2026Data() const { return m_pV2026Data.get(); }
+
+	/**
+	*	@brief Finds the version 2026 model that a model record returned by GetModelByBodyPart describes. Null if not a v2026 model.
+	*/
+	const v2026::Model* GetV2026Model( const mstudiomodel_t* pModel ) const;
+
+	/**
+	*	@brief Gets the texture coordinates (0..1, 3 per triangle) of the sub mesh that a mesh record describes.
+	*	@return false if this is not a v2026 model or the record is not valid.
+	*/
+	bool GetV2026SubMeshUVs( const mstudiomesh_t* pMesh, std::vector<glm::vec2>& uvs ) const;
+
+	/**
+	*	@brief Saves a version 2026 texture as a 24 bit BMP.
+	*	@return false if this is not a v2026 model, the index is invalid or the file could not be written.
+	*/
+	bool ExportV2026TextureBMP( const int iIndex, const char* pszFileName ) const;
+
+	/**
+	*	@brief Saves a version 2026 texture as a BC7 DDS file, with the mip levels stored in the model. This is the native format, nothing is lost.
+	*	@return false if this is not a v2026 model, the index is invalid or the file could not be written.
+	*/
+	bool ExportV2026TextureDDS( const int iIndex, const char* pszFileName ) const;
+
+	/**
+	*	@brief Saves a version 2026 texture. The format follows the extension of the file name: .bmp is saved as a 24 bit BMP,
+	*		anything else as a BC7 DDS file (see ExportV2026TextureDDS).
+	*/
+	bool ExportV2026Texture( const int iIndex, const char* pszFileName ) const;
+
+	/**
+	*	@brief Replaces a version 2026 texture with the contents of an image file. The extension decides how it is read:
+	*		.dds (see ImportV2026TextureDDS) or .bmp (8, 24 and 32 bit, compressed with a simple built in encoder).
+	*	@return An empty string on success, otherwise a message that says why the file couldn't be used.
+	*/
+	std::string ImportV2026Texture( const int iIndex, const char* pszFileName );
+
+	/**
+	*	@brief Replaces a version 2026 texture with the contents of a DDS file.
+	*	BC7 files are used as they are, including their mip levels. Uncompressed 8 bit RGBA files are compressed by a simple built in encoder.
+	*	@return An empty string on success, otherwise a message that says why the file couldn't be used.
+	*/
+	std::string ImportV2026TextureDDS( const int iIndex, const char* pszFileName );
+
+	/**
+	*	@brief Replaces a version 2026 texture with an RGBA image (compressed by a simple built in encoder).
+	*	@return An empty string on success, otherwise a message that says why the image couldn't be used.
+	*/
+	std::string ImportV2026TextureRGBA( const int iIndex, const int iWidth, const int iHeight, const uint8_t* pRGBA );
 
 	int GetBodyValueForGroup(int compositeValue, int group) const;
 
@@ -201,7 +266,11 @@ private:
 
 	std::vector<GLuint> m_Textures;
 
+	std::unique_ptr<v2026::StudioModelData> m_pV2026Data;
+
 private:
+	void OnV2026TextureReplaced( const int iIndex );
+
 	CStudioModel( const CStudioModel& ) = delete;
 	CStudioModel& operator=( const CStudioModel& ) = delete;
 };
